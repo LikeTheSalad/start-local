@@ -142,9 +142,8 @@ get_latest_version() {
 # Revert the status, removing containers, volumes, network and folder
 cleanup() {
   if [ -d "$installation_folder" ]; then
-    if [ -f "uninstall.sh" ]; then
-      "$installation_folder/stop.sh" >/dev/null 2>&1 || true
-      "$installation_folder/uninstall.sh" >/dev/null 2>&1 || true
+    if [ -f "$installation_folder/down.sh" ]; then
+      "$installation_folder/down.sh" >/dev/null 2>&1 || true
     fi
 
     rm -rf "$installation_folder"
