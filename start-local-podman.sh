@@ -997,7 +997,17 @@ start_container() {
 
   _log "[$(date '+%T')] - Running: timeout 60 ${CONTAINER_CLI} start '${cname}' ..."
   start_t=$(date +%s)
-  output=$(timeout 60 "$CONTAINER_CLI" start "${cname}" 2>&1)
+  # Close extra file descriptors (3-9) before starting podman so its conmon
+  # monitor process does not inherit them.  When start.sh is called from
+  # inside a test-framework capture subshell (e.g. bashunit's `$()` runner),
+  # bashunit saves its capture pipe write-end at fd 5 (`exec 5>&1`).  Without
+  # this close, conmon keeps fd 5 open for the lifetime of the container,
+  # preventing the outer `$()` from ever reaching EOF — causing a silent hang
+  # that lasts until the job is cancelled.
+  output=$(
+    for _cfd in 3 4 5 6 7 8 9; do eval "exec ${_cfd}>&-" 2>/dev/null || true; done
+    timeout 60 "$CONTAINER_CLI" start "${cname}" 2>&1
+  )
   start_exit=$?
   start_duration=$(( $(date +%s) - start_t ))
 
@@ -1304,26 +1314,38 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 [ -n "${CONTAINER_CLI:-}" ] || { echo "CONTAINER_CLI not set"; exit 1; }
 command -v "$CONTAINER_CLI" >/dev/null 2>&1 || { echo "Error: '$CONTAINER_CLI' not found."; exit 1; }
 
+# Shared debug log — same file read by the CI "Dump start.sh debug log" step.
+_DOWN_DEBUG_LOG=/tmp/start-local-debug.log
+_dlog() { echo "[$(date '+%T')] [down] $*" >> "$_DOWN_DEBUG_LOG"; }
+
+_dlog "=== down.sh run: $(date '+%Y-%m-%d %T') ==="
+
 remove_bridged_network() {
   [ -n "${CONTAINER_NETWORK_NAME:-}" ] || { echo "CONTAINER_NETWORK_NAME not set"; return 1; }
 
   # shellcheck disable=SC2059
   printf "Removing network '${CONTAINER_NETWORK_NAME}' ... "
 
+  _dlog "network inspect '${CONTAINER_NETWORK_NAME}' ..."
   if ! "$CONTAINER_CLI" network inspect "${CONTAINER_NETWORK_NAME}" >/dev/null 2>&1; then
+    _dlog "network '${CONTAINER_NETWORK_NAME}' does not exist — skipping."
     echo "done (does not exist)."
     return 0
   fi
 
   # Try graceful removal the network; if it's in use this will typically fail.
+  _dlog "network rm '${CONTAINER_NETWORK_NAME}' (graceful) ..."
   "$CONTAINER_CLI" network rm "${CONTAINER_NETWORK_NAME}" >/dev/null 2>&1 || true
 
   # Force remove.
+  _dlog "network rm -f '${CONTAINER_NETWORK_NAME}' ..."
   if "$CONTAINER_CLI" network rm -f "${CONTAINER_NETWORK_NAME}" >/dev/null 2>&1; then
+    _dlog "network '${CONTAINER_NETWORK_NAME}' removed."
     echo "done (removed)."
     return 0
   fi
 
+  _dlog "network '${CONTAINER_NETWORK_NAME}' removal FAILED."
   echo "failed."
 
   return 1
@@ -1338,16 +1360,21 @@ remove_volume() {
   # shellcheck disable=SC2059
   printf "Removing volume '$vol' ... "
 
+  _dlog "volume inspect '$vol' ..."
   if ! "$CONTAINER_CLI" volume inspect "$vol" >/dev/null 2>&1; then
+    _dlog "volume '$vol' does not exist — skipping."
     echo "done (does not exist)."
     return 0
   fi
 
+  _dlog "volume rm -f '$vol' ..."
   if "$CONTAINER_CLI" volume rm -f "$vol" >/dev/null 2>&1; then
+    _dlog "volume '$vol' removed."
     echo "done (removed)."
     return 0
   fi
 
+  _dlog "volume '$vol' removal FAILED."
   echo "failed."
 
   # If removal failed, attempt to list attached containers to help the user.
@@ -1366,21 +1393,29 @@ remove_container() {
   # shellcheck disable=SC2059
   printf "Removing container '$name' ... "
 
-  # If container doesn't exist, nothing to do.
+  _dlog "inspect '$name' ..."
   if ! "$CONTAINER_CLI" inspect "$name" >/dev/null 2>&1; then
+    _dlog "container '$name' does not exist — skipping."
     echo "done (does not exist)."
     return 0
   fi
 
   # Try graceful stop (ignore errors if not running).
+  _dlog "stop '$name' (graceful, timeout ~10s) ..."
+  _t=$(date +%s)
   "$CONTAINER_CLI" stop "$name" >/dev/null 2>&1 || true
+  _dlog "stop '$name' done ($(( $(date +%s) - _t ))s)."
 
   # Force remove (will stop if still running).
+  _dlog "rm -f '$name' ..."
+  _t=$(date +%s)
   if "$CONTAINER_CLI" rm -f "$name" >/dev/null 2>&1; then
+    _dlog "rm '$name' done ($(( $(date +%s) - _t ))s) — removed."
     echo "done (removed)."
     return 0
   fi
 
+  _dlog "rm '$name' FAILED ($(( $(date +%s) - _t ))s)."
   echo "failed."
   return 1
 }
@@ -1416,6 +1451,7 @@ main() {
 
   remove_elasticsearch_container
   remove_bridged_network
+  _dlog "=== down.sh complete ==="
 }
 
 main
