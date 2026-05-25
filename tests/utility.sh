@@ -69,23 +69,12 @@ function cap () { tee "${1}/capture.out"; }
 # Return the previous output
 function ret () { cat "${1}/capture.out"; }
 
-# Shared debug log — same file that start.sh writes to, dumped by the CI
-# "Dump start.sh debug log" step (if: always()) so entries survive cancellation.
-_UTILITY_DEBUG_LOG=/tmp/start-local-debug.log
-_ulog() { echo "[$(date '+%T')] [utility] $*" >> "$_UTILITY_DEBUG_LOG"; }
-
 # Check if a container service is running
 function check_container_service_running() {
   local container_name=$1
-  local containers ps_exit
-  _ulog "check_container_service_running('${container_name}'): running timeout 30 ${TEST_CONTAINER_CLI} ps ..."
-  containers=$(timeout 30 $TEST_CONTAINER_CLI ps --format '{{.Names}}' 2>/dev/null)
-  ps_exit=$?
-  if [ "${ps_exit}" -eq 124 ]; then
-    _ulog "check_container_service_running('${container_name}'): TIMED OUT (exit 124 — timeout(30) fired; '${TEST_CONTAINER_CLI} ps' was the hang point)."
-    return 1
-  fi
-  _ulog "check_container_service_running('${container_name}'): ps done (exit ${ps_exit})."
+  local containers
+  # timeout guards against podman ps hanging indefinitely
+  containers=$(timeout 30 $TEST_CONTAINER_CLI ps --format '{{.Names}}' 2>/dev/null || true)
   if echo "$containers" | grep -q "^${container_name}$"; then
     return 0 # true
   else
@@ -96,16 +85,8 @@ function check_container_service_running() {
 # Check if a container image exists
 function check_container_image_exists() {
   local image_name=$1
-  local inspect_exit
-  _ulog "check_container_image_exists('${image_name}'): running timeout 30 ${TEST_CONTAINER_CLI} image inspect ..."
-  timeout 30 $TEST_CONTAINER_CLI image inspect "$image_name" > /dev/null 2>&1
-  inspect_exit=$?
-  if [ "${inspect_exit}" -eq 124 ]; then
-    _ulog "check_container_image_exists('${image_name}'): TIMED OUT (exit 124 — timeout(30) fired; '${TEST_CONTAINER_CLI} image inspect' was the hang point)."
-    return 1
-  fi
-  _ulog "check_container_image_exists('${image_name}'): inspect done (exit ${inspect_exit})."
-  if [ "${inspect_exit}" -eq 0 ]; then
+  # timeout guards against podman image inspect hanging indefinitely
+  if timeout 30 $TEST_CONTAINER_CLI image inspect "$image_name" > /dev/null 2>&1; then
     return 0 # true
   else
     return 1 # false

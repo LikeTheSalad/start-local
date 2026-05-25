@@ -908,18 +908,6 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 [ -n "${CONTAINER_CLI:-}" ] || { echo "CONTAINER_CLI not set"; exit 1; }
 command -v "$CONTAINER_CLI" >/dev/null 2>&1 || { echo "Error: '$CONTAINER_CLI' not found."; exit 1; }
 
-# Diagnostic logging: write to stdout AND to a file so CI can display the
-# file contents independently of the test runner's subprocess capture.
-# The file survives even when the test runner (bashunit) buffers and
-# never flushes stdout from a hanging test.
-_DEBUG_LOG=/tmp/start-local-debug.log
-# Append a run separator so multiple invocations are distinguishable.
-echo "=== start.sh run: $(date '+%Y-%m-%d %T') ===" >> "$_DEBUG_LOG"
-_log() {
-  echo "$@"
-  echo "$@" >> "$_DEBUG_LOG"
-}
-
 wait_for_healthcheck() {
   # wait_for_healthcheck <container-name> <check-cmd>
   name=${1:?name required}
@@ -928,40 +916,18 @@ wait_for_healthcheck() {
   timeout_seconds=${HEALTHCHECK_TIMEOUT:-300}
   delay_seconds=${HEALTHCHECK_DELAY:-10}
 
-  loop_start=$(date +%s)
-  attempt=0
-  _log "[$(date '+%T')] Waiting for '${name}' to be healthy (timeout: ${timeout_seconds}s) ..."
+  start_time=$(date +%s)
+  # shellcheck disable=SC2059
+  printf "Waiting for '${name}' ... "
   while :; do
-    attempt=$((attempt + 1))
-    _log "[$(date '+%T')] - Attempt #${attempt}: running: timeout 15 ${CONTAINER_CLI} exec '${name}' ..."
     # Execute the check command inside the container; it should return 0 on success.
-    # timeout(1) guards against podman exec hanging at the container-runtime level,
-    # independently of the --max-time flag passed to curl inside the container.
-    exec_start=$(date +%s)
-    timeout 15 $CONTAINER_CLI exec "${name}" sh -c "$check_cmd" >/dev/null 2>&1
-    exec_exit=$?
-    exec_duration=$(( $(date +%s) - exec_start ))
-
-    if [ "${exec_exit}" -eq 0 ]; then
-      _log "[$(date '+%T')] - Attempt #${attempt}: healthy (exec took ${exec_duration}s)."
-      _log "[$(date '+%T')] '${name}' is healthy."
+    if $CONTAINER_CLI exec "${name}" sh -c "$check_cmd" >/dev/null 2>&1 ; then
+      echo "healthy."
       return 0
-    elif [ "${exec_exit}" -eq 124 ]; then
-      # exit 124 = timeout(1) killed podman exec before it returned.
-      # This means the exec-timeout fix (timeout 15) was what unblocked the loop.
-      _log "[$(date '+%T')] - Attempt #${attempt}: EXEC TIMED OUT after ${exec_duration}s (exit 124 — timeout(15) fired; without this fix the loop would have hung here)."
-    elif [ "${exec_duration}" -ge 5 ]; then
-      # Exec returned on its own, but took >=5s — strong sign that curl's --max-time 5
-      # was what caused it to return rather than hanging indefinitely.
-      _log "[$(date '+%T')] - Attempt #${attempt}: exec returned after ${exec_duration}s (exit ${exec_exit}) — curl --max-time likely fired."
-    else
-      _log "[$(date '+%T')] - Attempt #${attempt}: exec returned after ${exec_duration}s (exit ${exec_exit}) — normal failure (no timeout needed)."
     fi
-
     now=$(date +%s)
-    elapsed=$((now - loop_start))
-    if [ "${elapsed}" -ge "${timeout_seconds}" ]; then
-      _log "[$(date '+%T')] '${name}' health check timed out after ${elapsed}s."
+    if [ $((now - start_time)) -ge "${timeout_seconds}" ]; then
+      echo "timed out."
       return 1
     fi
     sleep "${delay_seconds}"
@@ -972,31 +938,19 @@ start_container() {
   # start_container <container-name>
   cname=${1:?container name required}
 
-  _log "[$(date '+%T')] Starting container '${cname}' ..."
+  # shellcheck disable=SC2059
+  printf "Starting container '${cname}' ... "
 
-  _log "[$(date '+%T')] - Running: ${CONTAINER_CLI} inspect '${cname}' ..."
-  inspect_start=$(date +%s)
-  $CONTAINER_CLI inspect "${cname}" >/dev/null 2>&1
-  inspect_exit=$?
-  inspect_duration=$(( $(date +%s) - inspect_start ))
-  if [ "${inspect_exit}" -ne 0 ]; then
-    _log "[$(date '+%T')] - inspect: '${cname}' does not exist (${inspect_duration}s, exit ${inspect_exit})."
+  if ! $CONTAINER_CLI inspect "${cname}" >/dev/null 2>&1; then
+    echo "failed (does not exist)."
     return 1
   fi
-  _log "[$(date '+%T')] - inspect: OK (${inspect_duration}s)."
 
-  _log "[$(date '+%T')] - Running: ${CONTAINER_CLI} ps (check if already running) ..."
-  ps_start=$(date +%s)
-  already_running=$($CONTAINER_CLI ps --format '{{.Names}}' 2>/dev/null | grep -cxF "${cname}" || true)
-  ps_duration=$(( $(date +%s) - ps_start ))
-  _log "[$(date '+%T')] - ps: done (${ps_duration}s)."
-  if [ "${already_running}" -gt 0 ]; then
-    _log "[$(date '+%T')] - '${cname}' already running."
+  if $CONTAINER_CLI ps --format '{{.Names}}' 2>/dev/null | grep -qxF "${cname}"; then
+    echo "done (already running)."
     return 0
   fi
 
-  _log "[$(date '+%T')] - Running: timeout 60 ${CONTAINER_CLI} start '${cname}' ..."
-  start_t=$(date +%s)
   # Close extra file descriptors (3-9) before starting podman so its conmon
   # monitor process does not inherit them.  When start.sh is called from
   # inside a test-framework capture subshell (e.g. bashunit's `$()` runner),
@@ -1004,33 +958,24 @@ start_container() {
   # this close, conmon keeps fd 5 open for the lifetime of the container,
   # preventing the outer `$()` from ever reaching EOF — causing a silent hang
   # that lasts until the job is cancelled.
-  output=$(
+  if ! output=$(
     for _cfd in 3 4 5 6 7 8 9; do eval "exec ${_cfd}>&-" 2>/dev/null || true; done
-    timeout 60 "$CONTAINER_CLI" start "${cname}" 2>&1
-  )
-  start_exit=$?
-  start_duration=$(( $(date +%s) - start_t ))
-
-  if [ "${start_exit}" -eq 124 ]; then
-    # exit 124 = timeout(1) killed podman start before it returned.
-    # This means the start-timeout fix was what unblocked start_container.
-    _log "[$(date '+%T')] - START TIMED OUT after ${start_duration}s (exit 124 — timeout(60) fired; without this fix start.sh would have hung here)."
-    return 1
-  elif [ "${start_exit}" -ne 0 ]; then
-    _log "[$(date '+%T')] - start: FAILED after ${start_duration}s (exit ${start_exit}): ${output}"
+    "$CONTAINER_CLI" start "${cname}" 2>&1
+  ); then
+    echo "failed."
+    printf '%s\n' "$output"
     return 1
   fi
 
-  _log "[$(date '+%T')] - start: OK (${start_duration}s) — timeout(60) was not needed."
+  echo "done."
   return 0
 }
 
 configure_kibana_system_user_password() {
-  _log "[$(date '+%T')] Setting up 'kibana_system' user password ..."
+  printf "Setting up 'kibana_system' user password ... "
 
   start_time=$(date +%s)
   timeout_seconds=60
-  attempt=0
 
   until \
     curl \
@@ -1044,23 +989,21 @@ configure_kibana_system_user_password() {
       | grep -q "^{}"; \
     do
 
-    attempt=$((attempt + 1))
     now=$(date +%s)
-    elapsed=$((now - start_time))
-    _log "[$(date '+%T')] - kibana_system password attempt #${attempt} failed (${elapsed}s elapsed)."
-    if [ "${elapsed}" -ge "${timeout_seconds}" ]; then
-      _log "[$(date '+%T')] - kibana_system password setup timed out."
+    if [ $((now - start_time)) -ge "${timeout_seconds}" ]; then
+      printf "\n"
+      echo "timed out.";
       exit 1
     fi
 
     sleep 2
   done
 
-  _log "[$(date '+%T')] 'kibana_system' password set."
+  echo "done."
 }
 
 create_elasticsearch_api_key() {
-  _log "[$(date '+%T')] Creating Elasticsearch API key ..."
+  printf "Creating Elasticsearch API key ... "
 
   status=0
   response=$(curl \
@@ -1074,7 +1017,7 @@ create_elasticsearch_api_key() {
   ) || status=$?
 
   if [ $status -ne 0 ]; then
-    _log "[$(date '+%T')] - API key creation failed (curl exit ${status})."
+    echo "failed."
     printf '%s\n' "$response"
     return 1
   fi
@@ -1082,7 +1025,7 @@ create_elasticsearch_api_key() {
   ES_LOCAL_API_KEY="$(echo "$response" | grep -Eo '"encoded":"[A-Za-z0-9+/=]+' | grep -Eo '[A-Za-z0-9+/=]+' | tail -n 1)"
   echo "ES_LOCAL_API_KEY=${ES_LOCAL_API_KEY}" >> "$script_dir/.env"
 
-  _log "[$(date '+%T')] API key created."
+  echo "done."
 }
 
 check_license() {
@@ -1129,19 +1072,9 @@ main() {
     echo "WARNING: Disk space is below the ${required} GB limit. Elasticsearch will be"
     echo "executed in read-only mode. Please free up disk space to resolve this issue."
     echo "----------------------------------------------------------------------------"
-    # Only pause for confirmation when running interactively (stdin is a tty).
-    # In non-interactive contexts (CI, piped input) skip the prompt to avoid
-    # blocking indefinitely.
-    if [ -t 0 ]; then
-      _log "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — LOW, stdin is a tty, showing prompt."
-      echo "Press ENTER to confirm."
-      # shellcheck disable=SC2034
-      read -r line
-    else
-      _log "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — LOW, stdin is not a tty (the [ -t 0 ] guard fired; without it 'read' would have blocked here)."
-    fi
-  else
-    _log "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — OK (disk check not a concern)."
+    echo "Press ENTER to confirm."
+    # shellcheck disable=SC2034
+    read -r line
   fi
 
   HEALTHCHECK_TIMEOUT=${HEALTHCHECK_TIMEOUT:-300}
@@ -1314,38 +1247,26 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 [ -n "${CONTAINER_CLI:-}" ] || { echo "CONTAINER_CLI not set"; exit 1; }
 command -v "$CONTAINER_CLI" >/dev/null 2>&1 || { echo "Error: '$CONTAINER_CLI' not found."; exit 1; }
 
-# Shared debug log — same file read by the CI "Dump start.sh debug log" step.
-_DOWN_DEBUG_LOG=/tmp/start-local-debug.log
-_dlog() { echo "[$(date '+%T')] [down] $*" >> "$_DOWN_DEBUG_LOG"; }
-
-_dlog "=== down.sh run: $(date '+%Y-%m-%d %T') ==="
-
 remove_bridged_network() {
   [ -n "${CONTAINER_NETWORK_NAME:-}" ] || { echo "CONTAINER_NETWORK_NAME not set"; return 1; }
 
   # shellcheck disable=SC2059
   printf "Removing network '${CONTAINER_NETWORK_NAME}' ... "
 
-  _dlog "network inspect '${CONTAINER_NETWORK_NAME}' ..."
   if ! "$CONTAINER_CLI" network inspect "${CONTAINER_NETWORK_NAME}" >/dev/null 2>&1; then
-    _dlog "network '${CONTAINER_NETWORK_NAME}' does not exist — skipping."
     echo "done (does not exist)."
     return 0
   fi
 
   # Try graceful removal the network; if it's in use this will typically fail.
-  _dlog "network rm '${CONTAINER_NETWORK_NAME}' (graceful) ..."
   "$CONTAINER_CLI" network rm "${CONTAINER_NETWORK_NAME}" >/dev/null 2>&1 || true
 
   # Force remove.
-  _dlog "network rm -f '${CONTAINER_NETWORK_NAME}' ..."
   if "$CONTAINER_CLI" network rm -f "${CONTAINER_NETWORK_NAME}" >/dev/null 2>&1; then
-    _dlog "network '${CONTAINER_NETWORK_NAME}' removed."
     echo "done (removed)."
     return 0
   fi
 
-  _dlog "network '${CONTAINER_NETWORK_NAME}' removal FAILED."
   echo "failed."
 
   return 1
@@ -1360,21 +1281,16 @@ remove_volume() {
   # shellcheck disable=SC2059
   printf "Removing volume '$vol' ... "
 
-  _dlog "volume inspect '$vol' ..."
   if ! "$CONTAINER_CLI" volume inspect "$vol" >/dev/null 2>&1; then
-    _dlog "volume '$vol' does not exist — skipping."
     echo "done (does not exist)."
     return 0
   fi
 
-  _dlog "volume rm -f '$vol' ..."
   if "$CONTAINER_CLI" volume rm -f "$vol" >/dev/null 2>&1; then
-    _dlog "volume '$vol' removed."
     echo "done (removed)."
     return 0
   fi
 
-  _dlog "volume '$vol' removal FAILED."
   echo "failed."
 
   # If removal failed, attempt to list attached containers to help the user.
@@ -1393,29 +1309,21 @@ remove_container() {
   # shellcheck disable=SC2059
   printf "Removing container '$name' ... "
 
-  _dlog "inspect '$name' ..."
+  # If container doesn't exist, nothing to do.
   if ! "$CONTAINER_CLI" inspect "$name" >/dev/null 2>&1; then
-    _dlog "container '$name' does not exist — skipping."
     echo "done (does not exist)."
     return 0
   fi
 
   # Try graceful stop (ignore errors if not running).
-  _dlog "stop '$name' (graceful, timeout ~10s) ..."
-  _t=$(date +%s)
   "$CONTAINER_CLI" stop "$name" >/dev/null 2>&1 || true
-  _dlog "stop '$name' done ($(( $(date +%s) - _t ))s)."
 
   # Force remove (will stop if still running).
-  _dlog "rm -f '$name' ..."
-  _t=$(date +%s)
   if "$CONTAINER_CLI" rm -f "$name" >/dev/null 2>&1; then
-    _dlog "rm '$name' done ($(( $(date +%s) - _t ))s) — removed."
     echo "done (removed)."
     return 0
   fi
 
-  _dlog "rm '$name' FAILED ($(( $(date +%s) - _t ))s)."
   echo "failed."
   return 1
 }
@@ -1451,7 +1359,6 @@ main() {
 
   remove_elasticsearch_container
   remove_bridged_network
-  _dlog "=== down.sh complete ==="
 }
 
 main
