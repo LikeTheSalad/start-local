@@ -85,8 +85,7 @@ function check_container_service_running() {
 # Check if a container image exists
 function check_container_image_exists() {
   local image_name=$1
-  # timeout guards against podman image inspect hanging indefinitely
-  if timeout 30 $TEST_CONTAINER_CLI image inspect "$image_name" > /dev/null 2>&1; then
+  if $TEST_CONTAINER_CLI image inspect "$image_name" > /dev/null 2>&1; then
     return 0 # true
   else
     return 1 # false
