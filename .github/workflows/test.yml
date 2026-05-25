@@ -96,6 +96,15 @@ jobs:
       run: |
         ./lib/bashunit
 
+    - name: Dump start.sh debug log
+      # Runs even on cancellation so we always see what start.sh did up to the
+      # point of the hang.  The file is written by the _log() helper inside the
+      # generated start.sh, bypassing bashunit's subprocess stdout capture.
+      if: always()
+      run: |
+        echo "=== /tmp/start-local-debug.log ==="
+        cat /tmp/start-local-debug.log 2>/dev/null || echo "(file not found — start.sh was never called)"
+
     - name: Save Podman images to cache
       if: always()
       run: |

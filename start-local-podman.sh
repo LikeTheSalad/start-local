@@ -908,6 +908,18 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 [ -n "${CONTAINER_CLI:-}" ] || { echo "CONTAINER_CLI not set"; exit 1; }
 command -v "$CONTAINER_CLI" >/dev/null 2>&1 || { echo "Error: '$CONTAINER_CLI' not found."; exit 1; }
 
+# Diagnostic logging: write to stdout AND to a file so CI can display the
+# file contents independently of the test runner's subprocess capture.
+# The file survives even when the test runner (bashunit) buffers and
+# never flushes stdout from a hanging test.
+_DEBUG_LOG=/tmp/start-local-debug.log
+# Append a run separator so multiple invocations are distinguishable.
+echo "=== start.sh run: $(date '+%Y-%m-%d %T') ===" >> "$_DEBUG_LOG"
+_log() {
+  echo "$@"
+  echo "$@" >> "$_DEBUG_LOG"
+}
+
 wait_for_healthcheck() {
   # wait_for_healthcheck <container-name> <check-cmd>
   name=${1:?name required}
@@ -918,10 +930,10 @@ wait_for_healthcheck() {
 
   loop_start=$(date +%s)
   attempt=0
-  echo "[$(date '+%T')] Waiting for '${name}' to be healthy (timeout: ${timeout_seconds}s) ..."
+  _log "[$(date '+%T')] Waiting for '${name}' to be healthy (timeout: ${timeout_seconds}s) ..."
   while :; do
     attempt=$((attempt + 1))
-    echo "[$(date '+%T')] - Attempt #${attempt}: running: timeout 15 ${CONTAINER_CLI} exec '${name}' ..."
+    _log "[$(date '+%T')] - Attempt #${attempt}: running: timeout 15 ${CONTAINER_CLI} exec '${name}' ..."
     # Execute the check command inside the container; it should return 0 on success.
     # timeout(1) guards against podman exec hanging at the container-runtime level,
     # independently of the --max-time flag passed to curl inside the container.
@@ -931,25 +943,25 @@ wait_for_healthcheck() {
     exec_duration=$(( $(date +%s) - exec_start ))
 
     if [ "${exec_exit}" -eq 0 ]; then
-      echo "[$(date '+%T')] - Attempt #${attempt}: healthy (exec took ${exec_duration}s)."
-      echo "[$(date '+%T')] '${name}' is healthy."
+      _log "[$(date '+%T')] - Attempt #${attempt}: healthy (exec took ${exec_duration}s)."
+      _log "[$(date '+%T')] '${name}' is healthy."
       return 0
     elif [ "${exec_exit}" -eq 124 ]; then
       # exit 124 = timeout(1) killed podman exec before it returned.
       # This means the exec-timeout fix (timeout 15) was what unblocked the loop.
-      echo "[$(date '+%T')] - Attempt #${attempt}: EXEC TIMED OUT after ${exec_duration}s (exit 124 — timeout(15) fired; without this fix the loop would have hung here)."
+      _log "[$(date '+%T')] - Attempt #${attempt}: EXEC TIMED OUT after ${exec_duration}s (exit 124 — timeout(15) fired; without this fix the loop would have hung here)."
     elif [ "${exec_duration}" -ge 5 ]; then
       # Exec returned on its own, but took >=5s — strong sign that curl's --max-time 5
       # was what caused it to return rather than hanging indefinitely.
-      echo "[$(date '+%T')] - Attempt #${attempt}: exec returned after ${exec_duration}s (exit ${exec_exit}) — curl --max-time likely fired."
+      _log "[$(date '+%T')] - Attempt #${attempt}: exec returned after ${exec_duration}s (exit ${exec_exit}) — curl --max-time likely fired."
     else
-      echo "[$(date '+%T')] - Attempt #${attempt}: exec returned after ${exec_duration}s (exit ${exec_exit}) — normal failure (no timeout needed)."
+      _log "[$(date '+%T')] - Attempt #${attempt}: exec returned after ${exec_duration}s (exit ${exec_exit}) — normal failure (no timeout needed)."
     fi
 
     now=$(date +%s)
     elapsed=$((now - loop_start))
     if [ "${elapsed}" -ge "${timeout_seconds}" ]; then
-      echo "[$(date '+%T')] '${name}' health check timed out after ${elapsed}s."
+      _log "[$(date '+%T')] '${name}' health check timed out after ${elapsed}s."
       return 1
     fi
     sleep "${delay_seconds}"
@@ -960,30 +972,30 @@ start_container() {
   # start_container <container-name>
   cname=${1:?container name required}
 
-  echo "[$(date '+%T')] Starting container '${cname}' ..."
+  _log "[$(date '+%T')] Starting container '${cname}' ..."
 
-  echo "[$(date '+%T')] - Running: ${CONTAINER_CLI} inspect '${cname}' ..."
+  _log "[$(date '+%T')] - Running: ${CONTAINER_CLI} inspect '${cname}' ..."
   inspect_start=$(date +%s)
   $CONTAINER_CLI inspect "${cname}" >/dev/null 2>&1
   inspect_exit=$?
   inspect_duration=$(( $(date +%s) - inspect_start ))
   if [ "${inspect_exit}" -ne 0 ]; then
-    echo "[$(date '+%T')] - inspect: '${cname}' does not exist (${inspect_duration}s, exit ${inspect_exit})."
+    _log "[$(date '+%T')] - inspect: '${cname}' does not exist (${inspect_duration}s, exit ${inspect_exit})."
     return 1
   fi
-  echo "[$(date '+%T')] - inspect: OK (${inspect_duration}s)."
+  _log "[$(date '+%T')] - inspect: OK (${inspect_duration}s)."
 
-  echo "[$(date '+%T')] - Running: ${CONTAINER_CLI} ps (check if already running) ..."
+  _log "[$(date '+%T')] - Running: ${CONTAINER_CLI} ps (check if already running) ..."
   ps_start=$(date +%s)
   already_running=$($CONTAINER_CLI ps --format '{{.Names}}' 2>/dev/null | grep -cxF "${cname}" || true)
   ps_duration=$(( $(date +%s) - ps_start ))
-  echo "[$(date '+%T')] - ps: done (${ps_duration}s)."
+  _log "[$(date '+%T')] - ps: done (${ps_duration}s)."
   if [ "${already_running}" -gt 0 ]; then
-    echo "[$(date '+%T')] - '${cname}' already running."
+    _log "[$(date '+%T')] - '${cname}' already running."
     return 0
   fi
 
-  echo "[$(date '+%T')] - Running: timeout 60 ${CONTAINER_CLI} start '${cname}' ..."
+  _log "[$(date '+%T')] - Running: timeout 60 ${CONTAINER_CLI} start '${cname}' ..."
   start_t=$(date +%s)
   output=$(timeout 60 "$CONTAINER_CLI" start "${cname}" 2>&1)
   start_exit=$?
@@ -992,19 +1004,19 @@ start_container() {
   if [ "${start_exit}" -eq 124 ]; then
     # exit 124 = timeout(1) killed podman start before it returned.
     # This means the start-timeout fix was what unblocked start_container.
-    echo "[$(date '+%T')] - START TIMED OUT after ${start_duration}s (exit 124 — timeout(60) fired; without this fix start.sh would have hung here)."
+    _log "[$(date '+%T')] - START TIMED OUT after ${start_duration}s (exit 124 — timeout(60) fired; without this fix start.sh would have hung here)."
     return 1
   elif [ "${start_exit}" -ne 0 ]; then
-    echo "[$(date '+%T')] - start: FAILED after ${start_duration}s (exit ${start_exit}): ${output}"
+    _log "[$(date '+%T')] - start: FAILED after ${start_duration}s (exit ${start_exit}): ${output}"
     return 1
   fi
 
-  echo "[$(date '+%T')] - start: OK (${start_duration}s) — timeout(60) was not needed."
+  _log "[$(date '+%T')] - start: OK (${start_duration}s) — timeout(60) was not needed."
   return 0
 }
 
 configure_kibana_system_user_password() {
-  echo "[$(date '+%T')] Setting up 'kibana_system' user password ..."
+  _log "[$(date '+%T')] Setting up 'kibana_system' user password ..."
 
   start_time=$(date +%s)
   timeout_seconds=60
@@ -1025,20 +1037,20 @@ configure_kibana_system_user_password() {
     attempt=$((attempt + 1))
     now=$(date +%s)
     elapsed=$((now - start_time))
-    echo "[$(date '+%T')] - kibana_system password attempt #${attempt} failed (${elapsed}s elapsed)."
+    _log "[$(date '+%T')] - kibana_system password attempt #${attempt} failed (${elapsed}s elapsed)."
     if [ "${elapsed}" -ge "${timeout_seconds}" ]; then
-      echo "[$(date '+%T')] - kibana_system password setup timed out."
+      _log "[$(date '+%T')] - kibana_system password setup timed out."
       exit 1
     fi
 
     sleep 2
   done
 
-  echo "[$(date '+%T')] 'kibana_system' password set."
+  _log "[$(date '+%T')] 'kibana_system' password set."
 }
 
 create_elasticsearch_api_key() {
-  echo "[$(date '+%T')] Creating Elasticsearch API key ..."
+  _log "[$(date '+%T')] Creating Elasticsearch API key ..."
 
   status=0
   response=$(curl \
@@ -1052,7 +1064,7 @@ create_elasticsearch_api_key() {
   ) || status=$?
 
   if [ $status -ne 0 ]; then
-    echo "[$(date '+%T')] - API key creation failed (curl exit ${status})."
+    _log "[$(date '+%T')] - API key creation failed (curl exit ${status})."
     printf '%s\n' "$response"
     return 1
   fi
@@ -1060,7 +1072,7 @@ create_elasticsearch_api_key() {
   ES_LOCAL_API_KEY="$(echo "$response" | grep -Eo '"encoded":"[A-Za-z0-9+/=]+' | grep -Eo '[A-Za-z0-9+/=]+' | tail -n 1)"
   echo "ES_LOCAL_API_KEY=${ES_LOCAL_API_KEY}" >> "$script_dir/.env"
 
-  echo "[$(date '+%T')] API key created."
+  _log "[$(date '+%T')] API key created."
 }
 
 check_license() {
@@ -1111,15 +1123,15 @@ main() {
     # In non-interactive contexts (CI, piped input) skip the prompt to avoid
     # blocking indefinitely.
     if [ -t 0 ]; then
-      echo "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — LOW, stdin is a tty, showing prompt."
+      _log "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — LOW, stdin is a tty, showing prompt."
       echo "Press ENTER to confirm."
       # shellcheck disable=SC2034
       read -r line
     else
-      echo "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — LOW, stdin is not a tty (the [ -t 0 ] guard fired; without it 'read' would have blocked here)."
+      _log "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — LOW, stdin is not a tty (the [ -t 0 ] guard fired; without it 'read' would have blocked here)."
     fi
   else
-    echo "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — OK (disk check not a concern)."
+    _log "[$(date '+%T')] Disk space: ${available_gb}GB available, ${required}GB required — OK (disk check not a concern)."
   fi
 
   HEALTHCHECK_TIMEOUT=${HEALTHCHECK_TIMEOUT:-300}
