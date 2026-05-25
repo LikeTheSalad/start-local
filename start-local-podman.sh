@@ -970,6 +970,7 @@ configure_kibana_system_user_password() {
   until \
     curl \
       -s \
+      --max-time 5 \
       -X POST \
       "${ES_LOCAL_URL}/_security/user/kibana_system/_password" \
       -d "{\"password\":\"${KIBANA_LOCAL_PASSWORD}\"}" \
@@ -1071,7 +1072,7 @@ main() {
 
   # Start Elasticsearch and wait for it to respond to REST requests.
   start_container "${ES_LOCAL_CONTAINER_NAME}" || exit 1
-  es_check="curl --output /dev/null --silent --head --fail -u elastic:${ES_LOCAL_PASSWORD} http://elasticsearch:9200"
+  es_check="curl --output /dev/null --silent --head --fail --max-time 5 -u elastic:${ES_LOCAL_PASSWORD} http://elasticsearch:9200"
   wait_for_healthcheck "${ES_LOCAL_CONTAINER_NAME}" "$es_check" || exit 1
 
   # Create Elasticsearch API key for local use on first start.
@@ -1087,7 +1088,7 @@ main() {
 
     # Start Kibana and wait for it to respond to REST requests.
     start_container "${KIBANA_LOCAL_CONTAINER_NAME}" || exit 1
-    kibana_check="curl -s -I http://kibana:5601 | grep -q 'HTTP/1.1 302 Found'"
+    kibana_check="curl -s -I --max-time 5 http://kibana:5601 | grep -q 'HTTP/1.1 302 Found'"
     wait_for_healthcheck "${KIBANA_LOCAL_CONTAINER_NAME}" "$kibana_check" || exit 1
   fi
 
