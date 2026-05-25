@@ -1421,7 +1421,9 @@ main() {
   fi
 
   # TODO: Embed down.sh content here to avoid sourcing external script.
-  "$script_dir/down.sh" || true
+  # Redirect stdin to /dev/null so Podman sub-commands cannot consume
+  # input that was piped to this script (e.g. answers for ask_confirmation).
+  "$script_dir/down.sh" </dev/null || true
 
   rm -f "$script_dir/.env"
   rm -f "$script_dir/up.sh"
