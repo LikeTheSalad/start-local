@@ -952,17 +952,7 @@ start_container() {
     return 0
   fi
 
-  # Close extra file descriptors (3-9) before starting podman so its conmon
-  # monitor process does not inherit them.  When start.sh is called from
-  # inside a test-framework capture subshell (e.g. bashunit's `$()` runner),
-  # bashunit saves its capture pipe write-end at fd 5 (`exec 5>&1`).  Without
-  # this close, conmon keeps fd 5 open for the lifetime of the container,
-  # preventing the outer `$()` from ever reaching EOF. This causes a silent hang
-  # that lasts until the job is cancelled.
-  if ! output=$(
-    for _cfd in 3 4 5 6 7 8 9; do eval "exec ${_cfd}>&-" 2>/dev/null || true; done
-    "$CONTAINER_CLI" start "${cname}" 2>&1
-  ); then
+  if ! output=$("$CONTAINER_CLI" start "${cname}" 2>&1); then
     echo "failed."
     printf '%s\n' "$output"
     return 1
@@ -1432,9 +1422,7 @@ main() {
   fi
 
   # TODO: Embed down.sh content here to avoid sourcing external script.
-  # Redirect stdin to /dev/null so Podman sub-commands cannot consume
-  # input that was piped to this script (e.g. answers for ask_confirmation).
-  "$script_dir/down.sh" </dev/null || true
+  "$script_dir/down.sh" || true
 
   rm -f "$script_dir/.env"
   rm -f "$script_dir/up.sh"

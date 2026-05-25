@@ -42,6 +42,7 @@ function test_start_with_expired_license() {
     
     # Change the expire date in start.sh
     sed -r -i 's/^(ES_LOCAL_LICENSE_EXPIRE_DATE=)[0-9]+$/\10/' "${ENV_PATH}"
+    close_extra_fds
     "${DEFAULT_DIR}/start.sh"
 
     # Check license is basic
