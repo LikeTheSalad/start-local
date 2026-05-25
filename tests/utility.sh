@@ -23,7 +23,7 @@ function get_http_response_code() {
     if [ -z "$url" ]; then
         echo "Error: you need to specify the URL for get the HTTP response"
         exit 1
-    fi
+    fi   
     username=$2
     password=$3
 
@@ -36,14 +36,14 @@ function get_http_response_code() {
     echo "$result"
 }
 
-# Login to Kibana using username and password
+# Login to Kibana using username and password 
 # usage: login_kibana url username password
 function login_kibana() {
     url=$1
     if [ -z "$url" ]; then
         echo "Error: you need to specify the URL for login to Kibana"
         exit 1
-    fi
+    fi 
     username=$2
     password=$3
     if [ -z "$username" ] || [ -z "$password" ]; then
@@ -83,8 +83,7 @@ function ret () { cat "${1}/capture.out"; }
 function check_container_service_running() {
   local container_name=$1
   local containers
-  # timeout guards against podman ps hanging indefinitely
-  containers=$(timeout 30 "$TEST_CONTAINER_CLI" ps --format '{{.Names}}' 2>/dev/null || true)
+  containers=$("$TEST_CONTAINER_CLI" ps --format '{{.Names}}')
   if echo "$containers" | grep -q "^${container_name}$"; then
     return 0 # true
   else
