@@ -209,7 +209,7 @@ generate_error_log() {
     echo "${msg}" > "$error_file"
   fi
 
-  {
+  { 
     echo "Start-local version: ${version}"
     echo "$container_cli engine version: $container_runtime_version"
     echo "Elastic Stack version: ${es_version}"
@@ -244,7 +244,7 @@ startup() {
   echo '-------------------------------------------------'
   echo '🚀 Run Elasticsearch and Kibana for local testing'
   echo '-------------------------------------------------'
-  echo
+  echo 
   echo 'ℹ️  Do not use this script in a production environment'
   echo
 
@@ -437,7 +437,7 @@ check_container_services() {
 }
 
 create_installation_folder() {
-  if [ ! -d "$folder" ]; then
+  if [ ! -d "$folder" ]; then 
     mkdir "$folder"
   fi
   cd "$folder"
@@ -515,7 +515,7 @@ create_kibana_config() {
   if [ "$esonly" = "true" ]; then
     return 0
   fi
-
+   
   if [ ! -d "config" ]; then
     mkdir config
   fi
@@ -662,7 +662,7 @@ detect_lxc() {
   fi
 
   # Check for LXC in /sys/fs/cgroup
-  if grep -q "lxc" /sys/fs/cgroup/* 2>/dev/null; then
+  if grep -q "lxc" /sys/fs/cgroup/* 2>/dev/null; then  
     return 0
   fi
 
@@ -1054,7 +1054,7 @@ check_license() {
     if [ "$status" = "200" ]; then
       echo "✅ Basic license successfully installed"
       echo "ES_LOCAL_LICENSE=basic" >> .env
-    else
+    else 
       echo "Error: Failed to activate Basic license (HTTP status code $status)."
       exit 1
     fi
