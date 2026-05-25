@@ -23,7 +23,7 @@ function get_http_response_code() {
     if [ -z "$url" ]; then
         echo "Error: you need to specify the URL for get the HTTP response"
         exit 1
-    fi   
+    fi
     username=$2
     password=$3
 
@@ -36,14 +36,14 @@ function get_http_response_code() {
     echo "$result"
 }
 
-# Login to Kibana using username and password 
+# Login to Kibana using username and password
 # usage: login_kibana url username password
 function login_kibana() {
     url=$1
     if [ -z "$url" ]; then
         echo "Error: you need to specify the URL for login to Kibana"
         exit 1
-    fi 
+    fi
     username=$2
     password=$3
     if [ -z "$username" ] || [ -z "$password" ]; then
@@ -67,7 +67,7 @@ function login_kibana() {
 # bashunit runs each test function inside a $() capture subshell and saves the
 # pipe write-end to fd 5 via `exec 5>&1`. Podman's conmon monitor inherits all
 # open fds at fork time, so without closing them it holds fd 5 open for the
-# container's lifetime — preventing the $() from ever reaching EOF and causing
+# container's lifetime. This prevents the $() from ever reaching EOF and causing
 # a silent hang until the CI job is cancelled.
 function close_extra_fds() {
   for _fd in 3 4 5 6 7 8 9; do eval "exec ${_fd}>&-" 2>/dev/null || true; done
