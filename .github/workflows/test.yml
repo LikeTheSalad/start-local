@@ -69,9 +69,44 @@ jobs:
         sudo apt-get remove -y docker docker-engine docker.io containerd runc docker-ce docker-ce-cli
         sudo apt-get -y install podman
 
+    - name: Restore Podman image cache
+      id: podman-cache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/podman-image-cache
+        key: podman-images-${{ matrix.os }}-${{ hashFiles('start-local-podman.sh') }}
+        restore-keys: |
+          podman-images-${{ matrix.os }}-
+
+    - name: Load cached Podman images
+      run: |
+        if ls /tmp/podman-image-cache/*.tar 2>/dev/null; then
+          for img in /tmp/podman-image-cache/*.tar; do
+            echo "Loading $img ..."
+            podman load -i "$img" || true
+          done
+        else
+          echo "No cached images found."
+        fi
+
     - name: Run the tests
       env:
         SCRIPT_FILE: 'start-local-podman.sh'
         TEST_CONTAINER_CLI: podman
       run: |
         ./lib/bashunit
+
+    - name: Save Podman images to cache
+      if: always()
+      run: |
+        mkdir -p /tmp/podman-image-cache
+        podman images --format '{{.Repository}}:{{.Tag}}' \
+          | grep -v '<none>' \
+          | while IFS= read -r img; do
+              safe_name=$(echo "$img" | tr '/:.@' '____')
+              target="/tmp/podman-image-cache/${safe_name}.tar"
+              if [ ! -f "$target" ]; then
+                echo "Saving $img -> $target"
+                podman save -o "$target" "$img" || true
+              fi
+            done
